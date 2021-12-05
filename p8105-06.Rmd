@@ -1,0 +1,159 @@
+---
+title: "hw6-sx2267"
+author: "ShibeiXu"
+date: "2021/12/4"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, 
+                      message = F, 
+                      warning = F, 
+                      out.width = "90%")
+library(tidyverse)
+library(leaps)
+library(patchwork)
+theme_set(theme_bw())
+```
+
+## Problem 1
+```{r}
+data1 = read.csv("birthweight.csv")%>% 
+  as.tibble() %>% 
+  janitor::clean_names()
+```
+
+```{r cleaning and factorize the dataset}
+data1 =
+  data1 %>% 
+  mutate(babysex = factor(babysex),
+         malform = factor(malform),
+         mrace = factor(mrace, levels = c(1, 2, 3, 4, 8)))
+```
+
+```{r checking missing value }
+summary(data1)
+#we see there is all 0s in multiple variables
+data1 =
+  data1 %>% 
+  select(-pnumlbw, -pnumsga)
+```
+
+```{r use backward stepwise}
+lm(bwt ~ ., data = data1) %>% 
+  step(direction='backward')
+```
+Based on the stepwise model, the final model are: babysex + bhead + blength + delwt + fincome + gaweeks + mheight + mrace + parity + ppwt + smoken
+
+```{r residual plot}
+model1 = lm(bwt ~ babysex + bhead + blength + delwt + fincome + gaweeks + mheight + mrace + parity + ppwt + smoken, data = data1)
+data1 %>% 
+  modelr::add_predictions(model1) %>% 
+  modelr::add_residuals(model1) %>% 
+  ggplot(aes(x = pred, y = resid)) + 
+  geom_point(aes(alpha = 0.5)) +
+  theme(legend.position = "none")
+```
+
+```{r compare 2 models}
+compare_df1 = 
+  modelr::crossv_mc(data1, 500) %>% 
+  mutate(train = map(train, as.tibble), 
+         test = map(test, as.tibble)) %>% 
+  mutate(model1 = map(train, ~lm(bwt ~ babysex + bhead + blength + delwt + fincome + gaweeks + mheight + mrace + parity + ppwt + smoken, data = .x)), 
+         test1_mod = map(train, ~lm(bwt ~ blength + gaweeks, data = .x)), 
+         test2_mod = map(train, ~lm(bwt ~ bhead+blength+babysex+bhead * blength * babysex, data = .x))) %>% 
+  mutate(rmse_optimal = map2_dbl(model1, test, ~modelr::rmse(model = .x, data = .y)), 
+         rmse_test1 = map2_dbl(test1_mod, test, ~modelr::rmse(model = .x, data = .y)),
+         rmse_test2 = map2_dbl(test2_mod, test, ~modelr::rmse(model = .x, data = .y)))
+```
+
+```{r}
+compare_df1 %>% 
+  select(starts_with("rmse")) %>% 
+  gather(key = model, value = rmse) %>% 
+  mutate(model = str_replace(model, "rmse_", ""),
+         model = fct_inorder(model)) %>% 
+  ggplot(aes(x = model, y = rmse)) + geom_violin()
+```
+The optimal model has the highest prediction accuracy.
+
+## Problem 2
+
+```{r load the data}
+weather_df = 
+  rnoaa::meteo_pull_monitors(
+    c("USW00094728"),
+    var = c("PRCP", "TMIN", "TMAX"), 
+    date_min = "2017-01-01",
+    date_max = "2017-12-31") %>%
+  mutate(
+    name = recode(id, USW00094728 = "CentralPark_NY"),
+    tmin = tmin / 10,
+    tmax = tmax / 10) %>%
+  select(name, id, everything())
+```
+```{r}
+head(weather_df,10)
+summary(weather_df)
+```
+```{r create boot function}
+boot_sample = function(df) {
+  sample_frac(df, replace = TRUE)
+}
+```
+
+```{r conduct bootstrap of 5000}
+boot_strap = 
+  data_frame(
+    strap_number = 1:5000,
+    strap_sample = rerun(5000, boot_sample(weather_df))
+  )
+bootstrap_result = 
+  boot_strap %>% 
+  mutate(
+    models = map(strap_sample, ~lm(tmax ~ tmin, data = .x) ),
+    results = map(models, broom::glance)) %>% 
+  select(-strap_sample, -models) %>% 
+  unnest(results) 
+```
+
+```{r R^2 analysis}
+bootstrap_result %>%
+  ggplot(aes(x = adj.r.squared)) + 
+  geom_density()
+```
+
+The CI of adjusted R square is `r quantile(bootstrap_result$adj.r.squared, probs=0.025)` , `r quantile(bootstrap_result$adj.r.squared, probs=0.975)`
+
+```{r for log betas functions}
+log_beta_p = function(df) {
+    log(df[1,2]*df[2,2]) %>% 
+    tibble() %>% 
+    mutate(
+      log_betas=.$estimate) %>% 
+    select(log_betas)
+}
+```
+
+
+```{r}
+bootstrap_result_1=
+  boot_strap %>% 
+  mutate(
+    models = map(strap_sample, ~lm(tmax ~ tmin, data = .x) ),
+    results = map(models, broom::tidy),
+    log_betas = map(results, log_beta_p)) %>% 
+  select(-strap_sample, -models) %>%
+  unnest(log_betas)
+```
+
+```{r density plot}
+bootstrap_result_1%>%
+  ggplot(aes(x = log_betas)) + 
+  geom_density()
+```
+The density plot indicates a normal distribution with mean centered around 2-2.05
+The CI of adjusted R square is `r quantile(bootstrap_result_1$log_betas, probs=0.025)` , `r quantile(bootstrap_result_1$log_betas, probs=0.975)`
+
+
